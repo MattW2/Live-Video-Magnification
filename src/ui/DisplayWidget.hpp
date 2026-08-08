@@ -18,6 +18,8 @@ class QRubberBand;
 class QMouseEvent;
 class QLabel;
 
+#include "core/OdsTypes.hpp"
+
 namespace livim {
 
 class LatestFrameMailbox;
@@ -47,16 +49,23 @@ public:
 
     void setViewMode(ViewMode mode);
 
-    // Arm ROI drawing: a left-button drag defines a rectangle and emits roiSelected.
+    // Arm ROI drawing: a left-button drag defines a rectangle and emits roiSelected & roiCreated.
     void setRoiDrawingEnabled(bool enabled);
+
+    // Multi-ROI overlay management
+    void setRois(const std::vector<ROI>& rois);
+    const std::vector<ROI>& rois() const { return rois_; }
+    void clearRois();
 
 signals:
     void roiSelected(float x, float y, float w, float h); // normalized [0,1] rect, image space
+    void roiCreated(QRectF normalizedRect);
 
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void paintEvent(QPaintEvent* e) override;
 
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
@@ -83,6 +92,7 @@ private:
     QRectF letterboxRect(const QRectF& region) const; // logical coords
     QRectF paneImageRect(const QPointF& p) const;
     void updateLabels();
+    void updateRoiOverlayLabels();
 
     LatestFrameMailbox* mailbox_ = nullptr;
     Instrumentation* instr_ = nullptr;
@@ -110,6 +120,9 @@ private:
     QRubberBand* rubberBand_ = nullptr;
     QPoint roiOrigin_;
     QRectF roiDrawRect_; // image rect of the pane where the current drag started
+
+    std::vector<ROI> rois_;
+    std::vector<QLabel*> roiLabels_;
 };
 
 } // namespace livim

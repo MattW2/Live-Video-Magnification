@@ -19,8 +19,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc videoio)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc videoio video)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Charts)
 if (UNIX AND NOT APPLE)
     find_package(Qt6 REQUIRED COMPONENTS WaylandClient)
 endif()
@@ -129,6 +129,15 @@ qt_add_executable(livim WIN32 MACOSX_BUNDLE
     src/ui/ExportSettingsDialog.cpp
     src/ui/ExportProgressDialog.hpp
     src/ui/ExportProgressDialog.cpp
+    src/core/OdsTypes.hpp
+    src/processing/ods/SignalAnalyzer.hpp
+    src/processing/ods/SignalAnalyzer.cpp
+    src/processing/ods/OdsProcessor.hpp
+    src/processing/ods/OdsProcessor.cpp
+    src/ui/RoiManagerWidget.hpp
+    src/ui/RoiManagerWidget.cpp
+    src/ui/OdsAnalysisDialog.hpp
+    src/ui/OdsAnalysisDialog.cpp
     src/ui/MainWindow.hpp
     src/ui/MainWindow.cpp
 )
@@ -147,8 +156,8 @@ endif ()
 
 target_link_libraries(livim PRIVATE
     livim_warnings
-    opencv_core opencv_imgproc opencv_videoio
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets
+    opencv_core opencv_imgproc opencv_videoio opencv_video
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Charts
 )
 
 if (WIN32)

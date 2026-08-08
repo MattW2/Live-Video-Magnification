@@ -29,6 +29,7 @@ class ProcessingPanel;
 class StatusStrip;
 class ExportProgressDialog;
 class RecordingBuffer;
+class OdsAnalysisDialog;
 
 // The application window. Controls invoke PlaybackController via signals/slots; a QTimer polls
 // stats. No pixel data ever travels through a signal/slot.
@@ -49,6 +50,7 @@ private slots:
     void onStop();
     void refreshStats();
     void onExport();
+    void onRunOdsAnalysis();
 
 private:
     void showControls(SourceControlsView* view);
@@ -113,6 +115,8 @@ private:
     bool                             exportActive_ = false;
     bool                             exportResume_ = false;   // resume playback when the flow ends
     bool                             recordingPhase_ = false; // camera: recording, not yet processing
+
+    OdsAnalysisDialog*               odsDialog_ = nullptr;
 };
 
 } // namespace livim

@@ -33,6 +33,7 @@ public:
 
     // Re-clamps the Hz cutoffs to the new Nyquist limit; re-emits.
     void setCaptureFps(double fps);
+    double captureFps() const;
 
     // Hides the Chroma attenuation row on a single-channel pipeline. Structural only; emits nothing,
     // since grayscale is not part of MagnificationParams.

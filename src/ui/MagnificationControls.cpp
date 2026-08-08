@@ -387,6 +387,10 @@ void MagnificationControls::setCaptureFps(double fps) {
     emit magnificationChanged(collectParams());
 }
 
+double MagnificationControls::captureFps() const {
+    return captureFpsSpin_ ? captureFpsSpin_->value() : 30.0;
+}
+
 void MagnificationControls::setGrayscale(bool on) {
     if (grayscale_ == on) return;
     grayscale_ = on;

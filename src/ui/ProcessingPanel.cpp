@@ -19,6 +19,8 @@
 #include "ui/Theme.hpp"
 #include "ui/ToggleSwitch.hpp"
 
+#include "ui/RoiManagerWidget.hpp"
+
 namespace livim {
 namespace {
 
@@ -31,14 +33,14 @@ QLabel* fieldLabel(const QString& text, QWidget* parent) {
 } // namespace
 
 ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
-    setMinimumWidth(264);
-    setMaximumWidth(440);
+    setMinimumWidth(280);
+    setMaximumWidth(460);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(metrics::space4, metrics::space4, metrics::space4, metrics::space4);
     layout->setSpacing(metrics::space3);
 
-    auto* title = new QLabel("Processing", this);
+    auto* title = new QLabel("Processing & ODS", this);
     QFont titleFont = title->font();
     titleFont.setBold(true);
     titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
@@ -95,6 +97,14 @@ ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
     magLayout->addWidget(magControls_);
     layout->addWidget(magGroup_);
 
+    // ODS Multi-ROI Management Group
+    odsGroup_ = new QGroupBox("Multi-ROI Video ODS", this);
+    auto* odsLayout = new QVBoxLayout(odsGroup_);
+    odsLayout->setContentsMargins(metrics::space2, metrics::space2, metrics::space2, metrics::space2);
+    roiManager_ = new RoiManagerWidget(odsGroup_);
+    odsLayout->addWidget(roiManager_);
+    layout->addWidget(odsGroup_);
+
     layout->addStretch(1);
 
     refreshIcons();
@@ -146,6 +156,10 @@ void ProcessingPanel::setMaxLevels(int maxLevels) {
 
 void ProcessingPanel::setCaptureFps(double fps) {
     magControls_->setCaptureFps(fps);
+}
+
+double ProcessingPanel::captureFps() const {
+    return magControls_->captureFps();
 }
 
 } // namespace livim

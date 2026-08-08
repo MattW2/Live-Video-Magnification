@@ -15,6 +15,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -28,6 +29,9 @@
 #include "export/BufferExportFrameSource.hpp"
 #include "export/FileExportFrameSource.hpp"
 #include "export/RecordingBuffer.hpp"
+#include "processing/ods/OdsProcessor.hpp"
+#include "ui/OdsAnalysisDialog.hpp"
+#include "ui/RoiManagerWidget.hpp"
 #include "ui/CameraControlsView.hpp"
 #include "ui/CameraSelectDialog.hpp"
 #include "ui/DisplayWidget.hpp"
@@ -246,6 +250,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 processingPanel_->setRoiActive(true);
             });
 
+    // Multi-ROI Video ODS management connections
+    connect(display_, &DisplayWidget::roiCreated, this, [this](QRectF rect) {
+        processingPanel_->roiManager()->addRoi(rect);
+    });
+    connect(processingPanel_->roiManager(), &RoiManagerWidget::roisChanged, this, [this](const std::vector<ROI>& rois) {
+        display_->setRois(rois);
+    });
+    connect(processingPanel_->roiManager(), &RoiManagerWidget::drawRoiToggled, this, [this](bool armed) {
+        display_->setRoiDrawingEnabled(armed);
+    });
+    connect(processingPanel_->roiManager(), &RoiManagerWidget::runAnalysisRequested, this, &MainWindow::onRunOdsAnalysis);
+
     connect(timeline_, &TimelineView::seekRequested, this,
             [this](std::int64_t frame) { controller_.seekFrame(frame); });
     connect(timeline_, &TimelineView::inOutChanged, this,
@@ -274,12 +290,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     timelineTimer_ = new QTimer(this);
     timelineTimer_->setInterval(60);
     connect(timelineTimer_, &QTimer::timeout, this, [this] {
-        if (!timeline_->isVisible()) return;
-        timeline_->setFrameCount(controller_.frameCount());
-        if (controller_.isPlaying())
-            timeline_->setPlayheadFrame(controller_.currentFrame());
-        else if (controller_.atEnd())
-            timeline_->setPlayheadFrame(controller_.currentFrame());
+        if (timeline_->isVisible()) {
+            timeline_->setFrameCount(controller_.frameCount());
+            if (controller_.isPlaying() || controller_.atEnd()) {
+                timeline_->setPlayheadFrame(controller_.currentFrame());
+            }
+        }
+        if (odsDialog_ && odsDialog_->isVisible()) {
+            odsDialog_->setPlayheadFrame(controller_.currentFrame());
+        }
     });
     timelineTimer_->start();
 
@@ -658,6 +677,79 @@ void MainWindow::finishExport() {
     recordingPhase_ = false;
     exportActive_ = false;
     setExportUiActive(false);
+}
+
+void MainWindow::onRunOdsAnalysis() {
+    if (!sourceOpen_ || sourceKind_ != SourceKind::File || currentFilePath_.isEmpty()) {
+        QMessageBox::warning(this, tr("ODS Analysis Unavailable"),
+                             tr("Please open a video file source to perform offline Video ODS displacement extraction."));
+        return;
+    }
+
+    auto& rois = const_cast<std::vector<ROI>&>(processingPanel_->roiManager()->rois());
+    if (rois.empty()) {
+        QMessageBox::information(this, tr("No ROIs Defined"),
+                                 tr("Please draw at least one Region of Interest (ROI) before running ODS analysis."));
+        return;
+    }
+
+    // Pause playback during offline batch pass
+    const bool wasPlaying = controller_.isPlaying();
+    controller_.pause();
+    updatePlayPauseButton();
+
+    QProgressDialog progress(tr("Extracting Video ODS Displacement Signals..."), tr("Cancel"), 0, 100, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setValue(0);
+    progress.show();
+
+    double detectedFps = 30.0;
+    const std::string videoPath = currentFilePath_.toStdString();
+    const std::int64_t inFrame = timeline_ ? timeline_->inFrame() : 0;
+    const std::int64_t outFrame = timeline_ ? timeline_->outFrame() : -1;
+
+    bool success = OdsProcessor::extractDisplacements(videoPath, detectedFps, rois, inFrame, outFrame, [&](int curFrame, int total) {
+        if (total > 0) {
+            progress.setMaximum(total);
+            progress.setValue(curFrame);
+        }
+        QCoreApplication::processEvents();
+        return !progress.wasCanceled();
+    });
+
+    progress.close();
+
+    if (!success) {
+        if (!progress.wasCanceled()) {
+            QMessageBox::warning(this, tr("ODS Analysis Error"), tr("Failed to extract motion vectors from video."));
+        }
+        if (wasPlaying) controller_.play();
+        return;
+    }
+
+    // Use the user-entered Capture FPS from the UI panel if valid, otherwise fallback to video's detected FPS
+    const double userFps = processingPanel_->captureFps();
+    const double realFps = (userFps > 0.0) ? userFps : (detectedFps > 0.0 ? detectedFps : 30.0);
+
+    if (!odsDialog_) {
+        odsDialog_ = new OdsAnalysisDialog(rois, inFrame, outFrame, realFps, this);
+        connect(odsDialog_, &OdsAnalysisDialog::seekRequested, this, [this](std::int64_t f) {
+            controller_.seekFrame(f);
+            if (timeline_) timeline_->setPlayheadFrame(f);
+        });
+    } else {
+        odsDialog_->updateData(rois, inFrame, outFrame, realFps);
+    }
+
+    odsDialog_->setPlayheadFrame(controller_.currentFrame());
+    odsDialog_->show();
+    odsDialog_->raise();
+    odsDialog_->activateWindow();
+
+    if (wasPlaying) {
+        controller_.play();
+        updatePlayPauseButton();
+    }
 }
 
 } // namespace livim

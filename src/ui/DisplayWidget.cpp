@@ -6,6 +6,7 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QOpenGLShaderProgram>
+#include <QPainter>
 #include <QRubberBand>
 #include <QTimer>
 
@@ -127,7 +128,7 @@ void DisplayWidget::initializeGL() {
 }
 
 void DisplayWidget::resizeGL(int /*w*/, int /*h*/) {
-    // Letterbox viewports are computed per-frame in paintGL from the current frame's aspect.
+    updateRoiOverlayLabels();
 }
 
 void DisplayWidget::uploadFrame(const Frame& f, Tex& tex) {
@@ -317,6 +318,115 @@ QRectF DisplayWidget::paneImageRect(const QPointF& p) const {
     return n > 0 ? letterboxRect(panes[0].region) : QRectF(0, 0, width(), height());
 }
 
+void DisplayWidget::setRois(const std::vector<ROI>& rois) {
+    rois_ = rois;
+    updateRoiOverlayLabels();
+    update();
+}
+
+void DisplayWidget::clearRois() {
+    rois_.clear();
+    updateRoiOverlayLabels();
+    update();
+}
+
+void DisplayWidget::updateRoiOverlayLabels() {
+    if (rois_.empty()) {
+        for (QLabel* lbl : roiLabels_) {
+            lbl->hide();
+        }
+        return;
+    }
+
+    Pane panes[2];
+    const int numPanes = layoutPanes(panes);
+    if (numPanes <= 0) {
+        for (QLabel* lbl : roiLabels_) {
+            lbl->hide();
+        }
+        return;
+    }
+
+    const QRectF c = letterboxRect(panes[0].region);
+    if (c.width() < 1.0 || c.height() < 1.0) {
+        for (QLabel* lbl : roiLabels_) {
+            lbl->hide();
+        }
+        return;
+    }
+
+    std::size_t activeCount = 0;
+    for (std::size_t i = 0; i < rois_.size(); ++i) {
+        const ROI& roi = rois_[i];
+        if (!roi.visible) continue;
+
+        if (activeCount >= roiLabels_.size()) {
+            auto* lbl = new QLabel(this);
+            lbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+            roiLabels_.push_back(lbl);
+        }
+
+        QLabel* lbl = roiLabels_[activeCount++];
+        lbl->setText(QString::fromStdString(roi.name + " [" + motionAxisToString(roi.axis) + "]"));
+        lbl->setStyleSheet(QString(
+            "color: white; background-color: %1; padding: 1px 5px; "
+            "border-radius: 3px; font-weight: bold; font-size: 11px;"
+        ).arg(roi.color.name()));
+
+        const double rx = c.left() + roi.normalizedRect.x() * c.width();
+        const double ry = c.top() + roi.normalizedRect.y() * c.height();
+
+        lbl->adjustSize();
+        const int lblH = lbl->height();
+        const int lblY = static_cast<int>(std::max(c.top(), ry - static_cast<double>(lblH)));
+        lbl->move(static_cast<int>(rx), lblY);
+        lbl->show();
+        lbl->raise();
+    }
+
+    for (std::size_t i = activeCount; i < roiLabels_.size(); ++i) {
+        roiLabels_[i]->hide();
+    }
+}
+
+void DisplayWidget::paintEvent(QPaintEvent* e) {
+    QOpenGLWidget::paintEvent(e);
+
+    updateRoiOverlayLabels();
+
+    if (rois_.empty()) {
+        return;
+    }
+
+    Pane panes[2];
+    const int numPanes = layoutPanes(panes);
+    if (numPanes <= 0) return;
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    for (int pIdx = 0; pIdx < numPanes; ++pIdx) {
+        const QRectF c = letterboxRect(panes[pIdx].region);
+        if (c.width() < 1.0 || c.height() < 1.0) continue;
+
+        for (const ROI& roi : rois_) {
+            if (!roi.visible) continue;
+
+            const double rx = c.left() + roi.normalizedRect.x() * c.width();
+            const double ry = c.top() + roi.normalizedRect.y() * c.height();
+            const double rw = roi.normalizedRect.width() * c.width();
+            const double rh = roi.normalizedRect.height() * c.height();
+
+            const QRectF box(rx, ry, rw, rh);
+
+            QPen pen(roi.color, 2, Qt::SolidLine);
+            painter.setPen(pen);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(box);
+        }
+    }
+}
+
 void DisplayWidget::setRoiDrawingEnabled(bool enabled) {
     roiDrawing_ = enabled;
     setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
@@ -372,6 +482,7 @@ void DisplayWidget::mouseReleaseEvent(QMouseEvent* e) {
     h = std::clamp(h, 0.0f, 1.0f - y);
     if (w <= 0.0f || h <= 0.0f) return;
     emit roiSelected(x, y, w, h);
+    emit roiCreated(QRectF(x, y, w, h));
 }
 
 } // namespace livim

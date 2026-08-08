@@ -13,6 +13,7 @@ namespace livim {
 class MagnificationControls;
 class SegmentedControl;
 class ToggleSwitch;
+class RoiManagerWidget;
 
 // Right-hand processing inspector. Source-agnostic: emits intent signals MainWindow forwards to
 // PlaybackController, and exposes setters the window calls to reflect source state.
@@ -29,12 +30,15 @@ public:
 
     // Clamps the Hz cutoffs to Nyquist (fps/2).
     void setCaptureFps(double fps);
+    double captureFps() const;
 
     // Shows/hides the "Reset ROI" button.
     void setRoiActive(bool active);
 
     // Reflects the "Select ROI" toggle state without re-emitting.
     void setRoiSelecting(bool selecting);
+
+    RoiManagerWidget* roiManager() const { return roiManager_; }
 
 signals:
     void grayscaleToggled(bool enabled);
@@ -56,6 +60,9 @@ private:
 
     QGroupBox*             magGroup_ = nullptr;
     MagnificationControls* magControls_ = nullptr;
+
+    QGroupBox*        odsGroup_ = nullptr;
+    RoiManagerWidget* roiManager_ = nullptr;
 };
 
 } // namespace livim
