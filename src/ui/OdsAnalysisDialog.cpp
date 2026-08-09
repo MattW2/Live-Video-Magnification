@@ -98,6 +98,33 @@ OdsAnalysisDialog::OdsAnalysisDialog(const std::vector<ROI>& rois,
     cursorInfoLabel_->setStyleSheet("QLabel { color: #38bdf8; font-weight: bold; padding: 4px 8px; background-color: #2d2d2d; border-radius: 4px; border: 1px solid #444; }");
     controlsLayout->addWidget(cursorInfoLabel_);
 
+    controlsLayout->addSpacing(16);
+
+    auto* tuneBtn = new QPushButton(tr("Tune Magnification to Peak"), this);
+    tuneBtn->setToolTip(tr("Automatically set the video magnification passband to isolate the dominant peak frequency"));
+    tuneBtn->setStyleSheet(
+        "QPushButton { background-color: #0284c7; color: white; border-radius: 4px; padding: 4px 10px; font-weight: bold; border: none; }"
+        "QPushButton:hover { background-color: #0369a1; }"
+    );
+    connect(tuneBtn, &QPushButton::clicked, this, [this] {
+        double bestFreq = -1.0;
+        double maxAmp = -1.0;
+        for (const RoiSpectrum& spec : spectra_) {
+            for (const SpectrumPeak& p : spec.topPeaks) {
+                if (p.magnitudePx > maxAmp) {
+                    maxAmp = p.magnitudePx;
+                    bestFreq = p.frequencyHz;
+                }
+            }
+        }
+        if (bestFreq > 0.0) {
+            double fLow = std::max(0.05, bestFreq * 0.85);
+            double fHigh = bestFreq * 1.15;
+            emit bandpassTuned(fLow, fHigh);
+        }
+    });
+    controlsLayout->addWidget(tuneBtn);
+
     controlsLayout->addStretch();
     mainLayout->addWidget(controlsBox);
 
@@ -333,6 +360,15 @@ void OdsAnalysisDialog::updateFreqChart() {
                 const double yPeak = useDbScale_ ? peak.magnitudeDb : peak.magnitudePx;
                 peakSeries->append(peak.frequencyHz, yPeak);
             }
+
+            connect(peakSeries, &QScatterSeries::clicked, this, [this](const QPointF& point) {
+                const double fPeak = point.x();
+                if (fPeak > 0.0) {
+                    const double fLow = std::max(0.05, fPeak * 0.85);
+                    const double fHigh = fPeak * 1.15;
+                    emit bandpassTuned(fLow, fHigh);
+                }
+            });
 
             chartFreq_->addSeries(peakSeries);
             peakSeries->attachAxis(axisFreqX_);

@@ -4,9 +4,12 @@
 
 #include "processing/IProcessor.hpp" // MagnificationMode, MagnificationParams
 
+#include "ui/DisplayWidget.hpp"
+
 class QEvent;
 class QGroupBox;
 class QPushButton;
+class QComboBox;
 
 namespace livim {
 
@@ -40,12 +43,16 @@ public:
 
     RoiManagerWidget* roiManager() const { return roiManager_; }
 
+    // Direct passband frequency tuning from spectrum analysis
+    void setFrequencyBand(double fLow, double fHigh);
+
 signals:
     void grayscaleToggled(bool enabled);
     void magnificationChanged(MagnificationParams params);
     void downscaleChanged(int divisor); // 1 / 2 / 4 / 8
     void roiSelectModeChanged(bool selecting);
     void roiResetRequested();
+    void opticalFlowOverlayChanged(DisplayWidget::OpticalFlowOverlayMode mode);
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -55,6 +62,7 @@ private:
 
     ToggleSwitch*     grayscaleSwitch_ = nullptr;
     SegmentedControl* resolutionSeg_ = nullptr;
+    QComboBox*        flowOverlayCombo_ = nullptr;
     QPushButton*      roiSelectButton_ = nullptr;
     QPushButton*      roiResetButton_ = nullptr;
 

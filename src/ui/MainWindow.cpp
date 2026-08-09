@@ -235,11 +235,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this](bool on) { controller_.setGrayscale(on); });
     connect(processingPanel_, &ProcessingPanel::magnificationChanged, this,
             [this](MagnificationParams p) { controller_.setMagnification(p); });
+    connect(processingPanel_, &ProcessingPanel::opticalFlowOverlayChanged, display_,
+            &DisplayWidget::setOpticalFlowOverlayMode);
 
     connect(processingPanel_, &ProcessingPanel::downscaleChanged, this,
             [this](int divisor) { controller_.setDownscale(divisor); });
-    connect(processingPanel_, &ProcessingPanel::roiSelectModeChanged, this,
-            [this](bool selecting) { display_->setRoiDrawingEnabled(selecting); });
+    connect(processingPanel_, &ProcessingPanel::roiSelectModeChanged, this, [this](bool selecting) {
+        if (selecting) {
+            processingPanel_->roiManager()->setDrawRoiArmed(false);
+            display_->setRoiMode(DisplayWidget::RoiMode::SingleProcessing);
+        } else {
+            display_->setRoiMode(DisplayWidget::RoiMode::None);
+        }
+    });
     connect(processingPanel_, &ProcessingPanel::roiResetRequested, this, [this] { resetRoi(); });
 
     // ROI selection is sticky: it stays armed until Reset ROI, and each drawn rect is composed
@@ -254,11 +262,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(display_, &DisplayWidget::roiCreated, this, [this](QRectF rect) {
         processingPanel_->roiManager()->addRoi(rect);
     });
+    connect(display_, &DisplayWidget::roisUpdated, this, [this](const std::vector<ROI>& rois) {
+        processingPanel_->roiManager()->setRois(rois);
+    });
     connect(processingPanel_->roiManager(), &RoiManagerWidget::roisChanged, this, [this](const std::vector<ROI>& rois) {
         display_->setRois(rois);
     });
     connect(processingPanel_->roiManager(), &RoiManagerWidget::drawRoiToggled, this, [this](bool armed) {
-        display_->setRoiDrawingEnabled(armed);
+        if (armed) {
+            processingPanel_->setRoiSelecting(false);
+            display_->setRoiMode(DisplayWidget::RoiMode::MultiRoiAdd);
+        } else {
+            display_->setRoiMode(DisplayWidget::RoiMode::None);
+        }
     });
     connect(processingPanel_->roiManager(), &RoiManagerWidget::runAnalysisRequested, this, &MainWindow::onRunOdsAnalysis);
 
@@ -443,7 +459,8 @@ void MainWindow::resetRoi() {
     controller_.clearRoi();
     processingPanel_->setRoiActive(false);
     processingPanel_->setRoiSelecting(false);
-    display_->setRoiDrawingEnabled(false);
+    processingPanel_->roiManager()->setDrawRoiArmed(false);
+    display_->setRoiMode(DisplayWidget::RoiMode::None);
 }
 
 void MainWindow::onOpenFile() {
@@ -736,6 +753,9 @@ void MainWindow::onRunOdsAnalysis() {
         connect(odsDialog_, &OdsAnalysisDialog::seekRequested, this, [this](std::int64_t f) {
             controller_.seekFrame(f);
             if (timeline_) timeline_->setPlayheadFrame(f);
+        });
+        connect(odsDialog_, &OdsAnalysisDialog::bandpassTuned, this, [this](double fLow, double fHigh) {
+            processingPanel_->setFrequencyBand(fLow, fHigh);
         });
     } else {
         odsDialog_->updateData(rois, inFrame, outFrame, realFps);

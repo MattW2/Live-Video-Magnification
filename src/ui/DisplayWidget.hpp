@@ -40,6 +40,27 @@ public:
         Stacked,
     };
 
+    enum class RoiMode {
+        None,
+        SingleProcessing,
+        MultiRoiAdd,
+    };
+
+    enum class RoiHandle {
+        None,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight,
+        Center,
+    };
+
+    enum class OpticalFlowOverlayMode {
+        None,
+        VectorGrid,
+        Heatmap,
+    };
+
     explicit DisplayWidget(QWidget* parent = nullptr);
     ~DisplayWidget() override;
 
@@ -49,8 +70,16 @@ public:
 
     void setViewMode(ViewMode mode);
 
-    // Arm ROI drawing: a left-button drag defines a rectangle and emits roiSelected & roiCreated.
+    // Set ROI mode explicitly (Single processing ROI, Multi-ROI addition, or None)
+    void setRoiMode(RoiMode mode);
+    RoiMode roiMode() const { return roiMode_; }
+
+    // Arm ROI drawing (legacy support: maps to SingleProcessing if true, None if false)
     void setRoiDrawingEnabled(bool enabled);
+
+    // Optical Flow Overlay Mode
+    void setOpticalFlowOverlayMode(OpticalFlowOverlayMode mode);
+    OpticalFlowOverlayMode opticalFlowOverlayMode() const { return flowOverlayMode_; }
 
     // Multi-ROI overlay management
     void setRois(const std::vector<ROI>& rois);
@@ -60,6 +89,7 @@ public:
 signals:
     void roiSelected(float x, float y, float w, float h); // normalized [0,1] rect, image space
     void roiCreated(QRectF normalizedRect);
+    void roisUpdated(const std::vector<ROI>& rois);
 
 protected:
     void initializeGL() override;
@@ -94,6 +124,9 @@ private:
     void updateLabels();
     void updateRoiOverlayLabels();
 
+    bool hitTestRoiHandles(const QPointF& pos, int& outRoiIdx, RoiHandle& outHandle) const;
+    void computeAndDrawOpticalFlow(QPainter& painter, const QRectF& imageRegion);
+
     LatestFrameMailbox* mailbox_ = nullptr;
     Instrumentation* instr_ = nullptr;
 
@@ -109,6 +142,8 @@ private:
     std::uint64_t lastSeq_ = kNoSeq; // display-skip accounting, keyed on the processed frame
 
     ViewMode viewMode_ = ViewMode::Processed;
+    RoiMode roiMode_ = RoiMode::None;
+    OpticalFlowOverlayMode flowOverlayMode_ = OpticalFlowOverlayMode::None;
 
     // Pane labels are child widgets, avoiding a GL/QPainter glyph-atlas conflict.
     QLabel* paneLabel_[2] = {nullptr, nullptr};
@@ -116,13 +151,24 @@ private:
     // Signature of the last layout the labels were positioned for.
     int lblSigW_ = -1, lblSigH_ = -1, lblSigTexW_ = -1, lblSigTexH_ = -1, lblSigMode_ = -1;
 
-    bool roiDrawing_ = false;
     QRubberBand* rubberBand_ = nullptr;
     QPoint roiOrigin_;
     QRectF roiDrawRect_; // image rect of the pane where the current drag started
 
+    // Multi-ROI interactive edit state
+    bool isDraggingRoi_ = false;
+    int activeRoiIndex_ = -1;
+    RoiHandle activeHandle_ = RoiHandle::None;
+    QPointF dragStartPos_;
+    QRectF dragStartRect_;
+    QRectF dragPaneRect_;
+
     std::vector<ROI> rois_;
     std::vector<QLabel*> roiLabels_;
+
+    // Optical Flow computation state
+    cv::Mat lastProcGray_;
+    cv::Mat flowMat_;
 };
 
 } // namespace livim

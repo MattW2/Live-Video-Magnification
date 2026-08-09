@@ -10,6 +10,9 @@
 #include <QRubberBand>
 #include <QTimer>
 
+#include <opencv2/imgproc.hpp>
+#include <opencv2/video/tracking.hpp>
+
 #include "core/Instrumentation.hpp"
 #include "core/LatestFrameMailbox.hpp"
 
@@ -55,6 +58,7 @@ void main() {
 } // namespace
 
 DisplayWidget::DisplayWidget(QWidget* parent) : QOpenGLWidget(parent) {
+    setMouseTracking(true);
     presentTimer_ = new QTimer(this);
     presentTimer_->setInterval(8); // ~120 Hz poll; vsync caps actual present rate
     connect(presentTimer_, &QTimer::timeout, this, [this] { update(); });
@@ -230,6 +234,24 @@ void DisplayWidget::paintGL() {
             const bool needOrig = (viewMode_ != ViewMode::Processed);
             if (needProc) uploadFrame(proc, texProc_);
             if (needOrig && presentable(df->original)) uploadFrame(*df->original, texOrig_);
+
+            if (flowOverlayMode_ != OpticalFlowOverlayMode::None && presentable(df->processed)) {
+                cv::Mat currGray;
+                if (df->processed->image.channels() == 1) {
+                    currGray = df->processed->image;
+                } else {
+                    cv::cvtColor(df->processed->image, currGray, cv::COLOR_BGR2GRAY);
+                }
+                if (currGray.cols > 480) {
+                    const double scale = 480.0 / currGray.cols;
+                    cv::resize(currGray, currGray, cv::Size(), scale, scale, cv::INTER_LINEAR);
+                }
+                if (!lastProcGray_.empty() && lastProcGray_.size() == currGray.size()) {
+                    cv::calcOpticalFlowFarneback(lastProcGray_, currGray, flowMat_, 0.5, 2, 12, 2, 5, 1.1, 0);
+                }
+                lastProcGray_ = currGray.clone();
+            }
+
             if (instr_) {
                 if (lastSeq_ != kNoSeq && proc.seq > lastSeq_ + 1)
                     instr_->addDisplaySkipped(proc.seq - lastSeq_ - 1);
@@ -389,14 +411,120 @@ void DisplayWidget::updateRoiOverlayLabels() {
     }
 }
 
+bool DisplayWidget::hitTestRoiHandles(const QPointF& pos, int& outRoiIdx, RoiHandle& outHandle) const {
+    Pane panes[2];
+    const int numPanes = layoutPanes(panes);
+    if (numPanes <= 0) return false;
+
+    constexpr double kHandleRadius = 8.0;
+
+    for (int pIdx = 0; pIdx < numPanes; ++pIdx) {
+        const QRectF c = letterboxRect(panes[pIdx].region);
+        if (c.width() < 1.0 || c.height() < 1.0) continue;
+        if (!c.contains(pos)) continue;
+
+        for (int i = static_cast<int>(rois_.size()) - 1; i >= 0; --i) {
+            const ROI& roi = rois_[i];
+            if (!roi.visible) continue;
+
+            const double rx = c.left() + roi.normalizedRect.x() * c.width();
+            const double ry = c.top() + roi.normalizedRect.y() * c.height();
+            const double rw = roi.normalizedRect.width() * c.width();
+            const double rh = roi.normalizedRect.height() * c.height();
+
+            const QPointF tl(rx, ry);
+            const QPointF tr(rx + rw, ry);
+            const QPointF bl(rx, ry + rh);
+            const QPointF br(rx + rw, ry + rh);
+
+            auto hitRect = [](const QPointF& pt, double r) {
+                return QRectF(pt.x() - r, pt.y() - r, r * 2.0, r * 2.0);
+            };
+
+            if (hitRect(tl, kHandleRadius).contains(pos)) { outRoiIdx = i; outHandle = RoiHandle::TopLeft; return true; }
+            if (hitRect(tr, kHandleRadius).contains(pos)) { outRoiIdx = i; outHandle = RoiHandle::TopRight; return true; }
+            if (hitRect(bl, kHandleRadius).contains(pos)) { outRoiIdx = i; outHandle = RoiHandle::BottomLeft; return true; }
+            if (hitRect(br, kHandleRadius).contains(pos)) { outRoiIdx = i; outHandle = RoiHandle::BottomRight; return true; }
+
+            if (QRectF(rx, ry, rw, rh).contains(pos)) { outRoiIdx = i; outHandle = RoiHandle::Center; return true; }
+        }
+    }
+    return false;
+}
+
+void DisplayWidget::computeAndDrawOpticalFlow(QPainter& painter, const QRectF& c) {
+    if (flowOverlayMode_ == OpticalFlowOverlayMode::None || flowMat_.empty()) return;
+
+    const int cols = flowMat_.cols;
+    const int rows = flowMat_.rows;
+    if (cols <= 0 || rows <= 0) return;
+
+    if (flowOverlayMode_ == OpticalFlowOverlayMode::VectorGrid) {
+        constexpr int step = 16;
+        for (int y = step / 2; y < rows; y += step) {
+            for (int x = step / 2; x < cols; x += step) {
+                const cv::Point2f flow = flowMat_.at<cv::Point2f>(y, x);
+                const double mag = std::sqrt(flow.x * flow.x + flow.y * flow.y);
+                if (mag < 0.15) continue;
+
+                const double sx = c.left() + (static_cast<double>(x) / cols) * c.width();
+                const double sy = c.top() + (static_cast<double>(y) / rows) * c.height();
+
+                const double ex = sx + (flow.x / cols) * c.width() * 4.0;
+                const double ey = sy + (flow.y / rows) * c.height() * 4.0;
+
+                const int hue = std::clamp(static_cast<int>(200.0 - mag * 25.0), 0, 200);
+                QColor color = QColor::fromHsv(hue, 230, 255);
+
+                painter.setPen(QPen(color, 1.5));
+                painter.drawLine(QPointF(sx, sy), QPointF(ex, ey));
+
+                const double angle = std::atan2(ey - sy, ex - sx);
+                constexpr double arrowSize = 4.0;
+                const QPointF p1(ex - arrowSize * std::cos(angle - M_PI / 6.0),
+                                 ey - arrowSize * std::sin(angle - M_PI / 6.0));
+                const QPointF p2(ex - arrowSize * std::cos(angle + M_PI / 6.0),
+                                 ey - arrowSize * std::sin(angle + M_PI / 6.0));
+                painter.drawLine(QPointF(ex, ey), p1);
+                painter.drawLine(QPointF(ex, ey), p2);
+            }
+        }
+    } else if (flowOverlayMode_ == OpticalFlowOverlayMode::Heatmap) {
+        cv::Mat magMat(rows, cols, CV_32FC1);
+        for (int r = 0; r < rows; ++r) {
+            const cv::Point2f* fPtr = flowMat_.ptr<cv::Point2f>(r);
+            float* mPtr = magMat.ptr<float>(r);
+            for (int cIdx = 0; cIdx < cols; ++cIdx) {
+                mPtr[cIdx] = std::sqrt(fPtr[cIdx].x * fPtr[cIdx].x + fPtr[cIdx].y * fPtr[cIdx].y);
+            }
+        }
+        cv::Mat mag8u;
+        magMat.convertTo(mag8u, CV_8UC1, 30.0);
+        cv::Mat colorMap;
+        cv::applyColorMap(mag8u, colorMap, cv::COLORMAP_TURBO);
+
+        cv::Mat bgraMap;
+        cv::cvtColor(colorMap, bgraMap, cv::COLOR_BGR2BGRA);
+        for (int r = 0; r < rows; ++r) {
+            cv::Vec4b* ptr = bgraMap.ptr<cv::Vec4b>(r);
+            const float* mPtr = magMat.ptr<float>(r);
+            for (int cIdx = 0; cIdx < cols; ++cIdx) {
+                const uchar alpha = static_cast<uchar>(std::clamp(mPtr[cIdx] * 40.0, 0.0, 160.0));
+                ptr[cIdx][3] = alpha;
+            }
+        }
+
+        QImage qImg(bgraMap.data, bgraMap.cols, bgraMap.rows, static_cast<int>(bgraMap.step), QImage::Format_ARGB32);
+        painter.setOpacity(0.75);
+        painter.drawImage(c, qImg);
+        painter.setOpacity(1.0);
+    }
+}
+
 void DisplayWidget::paintEvent(QPaintEvent* e) {
     QOpenGLWidget::paintEvent(e);
 
     updateRoiOverlayLabels();
-
-    if (rois_.empty()) {
-        return;
-    }
 
     Pane panes[2];
     const int numPanes = layoutPanes(panes);
@@ -405,84 +533,237 @@ void DisplayWidget::paintEvent(QPaintEvent* e) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    for (int pIdx = 0; pIdx < numPanes; ++pIdx) {
-        const QRectF c = letterboxRect(panes[pIdx].region);
-        if (c.width() < 1.0 || c.height() < 1.0) continue;
+    if (flowOverlayMode_ != OpticalFlowOverlayMode::None && !flowMat_.empty()) {
+        for (int pIdx = 0; pIdx < numPanes; ++pIdx) {
+            const QRectF c = letterboxRect(panes[pIdx].region);
+            if (c.width() < 1.0 || c.height() < 1.0) continue;
+            computeAndDrawOpticalFlow(painter, c);
+        }
+    }
 
-        for (const ROI& roi : rois_) {
-            if (!roi.visible) continue;
+    if (!rois_.empty()) {
+        for (int pIdx = 0; pIdx < numPanes; ++pIdx) {
+            const QRectF c = letterboxRect(panes[pIdx].region);
+            if (c.width() < 1.0 || c.height() < 1.0) continue;
 
-            const double rx = c.left() + roi.normalizedRect.x() * c.width();
-            const double ry = c.top() + roi.normalizedRect.y() * c.height();
-            const double rw = roi.normalizedRect.width() * c.width();
-            const double rh = roi.normalizedRect.height() * c.height();
+            for (const ROI& roi : rois_) {
+                if (!roi.visible) continue;
 
-            const QRectF box(rx, ry, rw, rh);
+                const double rx = c.left() + roi.normalizedRect.x() * c.width();
+                const double ry = c.top() + roi.normalizedRect.y() * c.height();
+                const double rw = roi.normalizedRect.width() * c.width();
+                const double rh = roi.normalizedRect.height() * c.height();
 
-            QPen pen(roi.color, 2, Qt::SolidLine);
-            painter.setPen(pen);
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRect(box);
+                const QRectF box(rx, ry, rw, rh);
+
+                QPen pen(roi.color, 2, Qt::SolidLine);
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(box);
+
+                // Draw 4 corner control handles for interactive resizing
+                constexpr double hSize = 6.0;
+                painter.setBrush(Qt::white);
+                painter.setPen(QPen(roi.color, 1.5));
+                painter.drawRect(QRectF(rx - hSize / 2.0, ry - hSize / 2.0, hSize, hSize));
+                painter.drawRect(QRectF(rx + rw - hSize / 2.0, ry - hSize / 2.0, hSize, hSize));
+                painter.drawRect(QRectF(rx - hSize / 2.0, ry + rh - hSize / 2.0, hSize, hSize));
+                painter.drawRect(QRectF(rx + rw - hSize / 2.0, ry + rh - hSize / 2.0, hSize, hSize));
+            }
         }
     }
 }
 
+void DisplayWidget::setRoiMode(RoiMode mode) {
+    roiMode_ = mode;
+    if (mode == RoiMode::SingleProcessing || mode == RoiMode::MultiRoiAdd) {
+        setCursor(Qt::CrossCursor);
+    } else {
+        setCursor(Qt::ArrowCursor);
+        if (rubberBand_) rubberBand_->hide();
+    }
+}
+
 void DisplayWidget::setRoiDrawingEnabled(bool enabled) {
-    roiDrawing_ = enabled;
-    setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
-    if (!enabled && rubberBand_) rubberBand_->hide();
+    setRoiMode(enabled ? RoiMode::SingleProcessing : RoiMode::None);
+}
+
+void DisplayWidget::setOpticalFlowOverlayMode(OpticalFlowOverlayMode mode) {
+    if (flowOverlayMode_ == mode) return;
+    flowOverlayMode_ = mode;
+    update();
 }
 
 void DisplayWidget::mousePressEvent(QMouseEvent* e) {
-    if (!roiDrawing_ || e->button() != Qt::LeftButton || (texProc_.w <= 0 && texOrig_.w <= 0)) {
+    if (e->button() != Qt::LeftButton) {
         QOpenGLWidget::mousePressEvent(e);
         return;
     }
-    // Lock the drag to the pane it started in.
-    roiDrawRect_ = paneImageRect(e->position());
-    const QRectF c = roiDrawRect_;
-    const QPointF p = e->position();
-    roiOrigin_ = QPoint(static_cast<int>(std::clamp(p.x(), c.left(), c.right())),
-                        static_cast<int>(std::clamp(p.y(), c.top(), c.bottom())));
-    if (!rubberBand_) rubberBand_ = new QRubberBand(QRubberBand::Rectangle, this);
-    rubberBand_->setGeometry(QRect(roiOrigin_, QSize()));
-    rubberBand_->show();
+
+    if (roiMode_ == RoiMode::SingleProcessing || roiMode_ == RoiMode::MultiRoiAdd) {
+        if (texProc_.w <= 0 && texOrig_.w <= 0) {
+            QOpenGLWidget::mousePressEvent(e);
+            return;
+        }
+        roiDrawRect_ = paneImageRect(e->position());
+        const QRectF c = roiDrawRect_;
+        const QPointF p = e->position();
+        roiOrigin_ = QPoint(static_cast<int>(std::clamp(p.x(), c.left(), c.right())),
+                            static_cast<int>(std::clamp(p.y(), c.top(), c.bottom())));
+        if (!rubberBand_) rubberBand_ = new QRubberBand(QRubberBand::Rectangle, this);
+        rubberBand_->setGeometry(QRect(roiOrigin_, QSize()));
+        rubberBand_->show();
+        return;
+    }
+
+    if (roiMode_ == RoiMode::None && !rois_.empty()) {
+        int roiIdx = -1;
+        RoiHandle handle = RoiHandle::None;
+        if (hitTestRoiHandles(e->position(), roiIdx, handle)) {
+            activeRoiIndex_ = roiIdx;
+            activeHandle_ = handle;
+            isDraggingRoi_ = true;
+            dragStartPos_ = e->position();
+            dragStartRect_ = rois_[roiIdx].normalizedRect;
+            dragPaneRect_ = paneImageRect(e->position());
+            return;
+        }
+    }
+
+    QOpenGLWidget::mousePressEvent(e);
 }
 
 void DisplayWidget::mouseMoveEvent(QMouseEvent* e) {
-    if (!roiDrawing_ || !rubberBand_ || !rubberBand_->isVisible()) {
-        QOpenGLWidget::mouseMoveEvent(e);
+    if (roiMode_ == RoiMode::SingleProcessing || roiMode_ == RoiMode::MultiRoiAdd) {
+        if (rubberBand_ && rubberBand_->isVisible()) {
+            const QRectF c = roiDrawRect_;
+            const QPointF p = e->position();
+            const QPoint cur(static_cast<int>(std::clamp(p.x(), c.left(), c.right())),
+                             static_cast<int>(std::clamp(p.y(), c.top(), c.bottom())));
+            rubberBand_->setGeometry(QRect(roiOrigin_, cur).normalized());
+            return;
+        }
+    } else if (isDraggingRoi_ && activeRoiIndex_ >= 0 && activeRoiIndex_ < static_cast<int>(rois_.size())) {
+        const QPointF p = e->position();
+        const double dx = p.x() - dragStartPos_.x();
+        const double dy = p.y() - dragStartPos_.y();
+        const double paneW = dragPaneRect_.width();
+        const double paneH = dragPaneRect_.height();
+
+        if (paneW > 1.0 && paneH > 1.0) {
+            const double ndx = dx / paneW;
+            const double ndy = dy / paneH;
+            QRectF rect = dragStartRect_;
+
+            constexpr double kMinSize = 0.01;
+
+            if (activeHandle_ == RoiHandle::Center) {
+                double nx = rect.x() + ndx;
+                double ny = rect.y() + ndy;
+                nx = std::clamp(nx, 0.0, 1.0 - rect.width());
+                ny = std::clamp(ny, 0.0, 1.0 - rect.height());
+                rect.moveTo(nx, ny);
+            } else {
+                double left = rect.left();
+                double top = rect.top();
+                double right = rect.right();
+                double bottom = rect.bottom();
+
+                switch (activeHandle_) {
+                case RoiHandle::TopLeft:
+                    left = std::clamp(rect.left() + ndx, 0.0, right - kMinSize);
+                    top = std::clamp(rect.top() + ndy, 0.0, bottom - kMinSize);
+                    break;
+                case RoiHandle::TopRight:
+                    right = std::clamp(rect.right() + ndx, left + kMinSize, 1.0);
+                    top = std::clamp(rect.top() + ndy, 0.0, bottom - kMinSize);
+                    break;
+                case RoiHandle::BottomLeft:
+                    left = std::clamp(rect.left() + ndx, 0.0, right - kMinSize);
+                    bottom = std::clamp(rect.bottom() + ndy, top + kMinSize, 1.0);
+                    break;
+                case RoiHandle::BottomRight:
+                    right = std::clamp(rect.right() + ndx, left + kMinSize, 1.0);
+                    bottom = std::clamp(rect.bottom() + ndy, top + kMinSize, 1.0);
+                    break;
+                default:
+                    break;
+                }
+                rect = QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
+            }
+
+            rois_[activeRoiIndex_].normalizedRect = rect;
+            updateRoiOverlayLabels();
+            update();
+        }
         return;
+    } else if (roiMode_ == RoiMode::None && !rois_.empty()) {
+        int roiIdx = -1;
+        RoiHandle handle = RoiHandle::None;
+        if (hitTestRoiHandles(e->position(), roiIdx, handle)) {
+            switch (handle) {
+            case RoiHandle::TopLeft:
+            case RoiHandle::BottomRight:
+                setCursor(Qt::SizeFDiagCursor);
+                break;
+            case RoiHandle::TopRight:
+            case RoiHandle::BottomLeft:
+                setCursor(Qt::SizeBDiagCursor);
+                break;
+            case RoiHandle::Center:
+                setCursor(Qt::SizeAllCursor);
+                break;
+            default:
+                setCursor(Qt::ArrowCursor);
+                break;
+            }
+        } else {
+            setCursor(Qt::ArrowCursor);
+        }
     }
-    const QRectF c = roiDrawRect_;
-    const QPointF p = e->position();
-    const QPoint cur(static_cast<int>(std::clamp(p.x(), c.left(), c.right())),
-                     static_cast<int>(std::clamp(p.y(), c.top(), c.bottom())));
-    rubberBand_->setGeometry(QRect(roiOrigin_, cur).normalized());
+
+    QOpenGLWidget::mouseMoveEvent(e);
 }
 
 void DisplayWidget::mouseReleaseEvent(QMouseEvent* e) {
-    if (!roiDrawing_ || e->button() != Qt::LeftButton || !rubberBand_) {
+    if (e->button() != Qt::LeftButton) {
         QOpenGLWidget::mouseReleaseEvent(e);
         return;
     }
-    const QRect band = rubberBand_->geometry();
-    rubberBand_->hide(); // but stay armed; the Select ROI toggle owns drawing state
-    const QRectF c = roiDrawRect_;
-    if (c.width() < 1.0 || c.height() < 1.0) return;
-    if (band.width() < 6 || band.height() < 6) return; // ignore stray clicks
 
-    float x = static_cast<float>((band.left() - c.left()) / c.width());
-    float y = static_cast<float>((band.top() - c.top()) / c.height());
-    float w = static_cast<float>(band.width() / c.width());
-    float h = static_cast<float>(band.height() / c.height());
-    x = std::clamp(x, 0.0f, 1.0f);
-    y = std::clamp(y, 0.0f, 1.0f);
-    w = std::clamp(w, 0.0f, 1.0f - x);
-    h = std::clamp(h, 0.0f, 1.0f - y);
-    if (w <= 0.0f || h <= 0.0f) return;
-    emit roiSelected(x, y, w, h);
-    emit roiCreated(QRectF(x, y, w, h));
+    if (isDraggingRoi_) {
+        isDraggingRoi_ = false;
+        activeRoiIndex_ = -1;
+        activeHandle_ = RoiHandle::None;
+        emit roisUpdated(rois_);
+        return;
+    }
+
+    if ((roiMode_ == RoiMode::SingleProcessing || roiMode_ == RoiMode::MultiRoiAdd) && rubberBand_) {
+        const QRect band = rubberBand_->geometry();
+        rubberBand_->hide();
+        const QRectF c = roiDrawRect_;
+        if (c.width() < 1.0 || c.height() < 1.0 || band.width() < 6 || band.height() < 6) return;
+
+        float x = static_cast<float>((band.left() - c.left()) / c.width());
+        float y = static_cast<float>((band.top() - c.top()) / c.height());
+        float w = static_cast<float>(band.width() / c.width());
+        float h = static_cast<float>(band.height() / c.height());
+        x = std::clamp(x, 0.0f, 1.0f);
+        y = std::clamp(y, 0.0f, 1.0f);
+        w = std::clamp(w, 0.0f, 1.0f - x);
+        h = std::clamp(h, 0.0f, 1.0f - y);
+        if (w <= 0.0f || h <= 0.0f) return;
+
+        if (roiMode_ == RoiMode::SingleProcessing) {
+            emit roiSelected(x, y, w, h);
+        } else if (roiMode_ == RoiMode::MultiRoiAdd) {
+            emit roiCreated(QRectF(x, y, w, h));
+        }
+        return;
+    }
+
+    QOpenGLWidget::mouseReleaseEvent(e);
 }
 
 } // namespace livim

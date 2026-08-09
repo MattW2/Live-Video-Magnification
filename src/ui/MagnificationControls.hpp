@@ -39,6 +39,9 @@ public:
     // since grayscale is not part of MagnificationParams.
     void setGrayscale(bool on);
 
+    // Direct bandpass tuning from spectrum analysis chart
+    void setFrequencyBand(double fLow, double fHigh);
+
 signals:
     void magnificationChanged(MagnificationParams params);
 

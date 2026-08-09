@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <QColor>
+#include <QComboBox>
 #include <QEvent>
 #include <QFont>
 #include <QGroupBox>
@@ -89,6 +90,20 @@ ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
     grayLayout->addWidget(grayscaleSwitch_);
     layout->addWidget(grayRow);
 
+    auto* flowRow = new QWidget(this);
+    auto* flowLayout = new QHBoxLayout(flowRow);
+    flowLayout->setContentsMargins(0, 0, 0, 0);
+    flowLayout->addWidget(new QLabel("Motion Overlay", flowRow));
+    flowLayout->addStretch(1);
+    flowOverlayCombo_ = new QComboBox(flowRow);
+    flowOverlayCombo_->setObjectName("valueReadout");
+    flowOverlayCombo_->addItem("None", static_cast<int>(DisplayWidget::OpticalFlowOverlayMode::None));
+    flowOverlayCombo_->addItem("Vectors (Grid)", static_cast<int>(DisplayWidget::OpticalFlowOverlayMode::VectorGrid));
+    flowOverlayCombo_->addItem("Heatmap", static_cast<int>(DisplayWidget::OpticalFlowOverlayMode::Heatmap));
+    flowOverlayCombo_->setToolTip("Overlay real-time motion direction vectors or velocity heatmaps over the display.");
+    flowLayout->addWidget(flowOverlayCombo_);
+    layout->addWidget(flowRow);
+
     magGroup_ = new QGroupBox("Magnification", this);
     auto* magLayout = new QVBoxLayout(magGroup_);
     magLayout->setContentsMargins(metrics::space2, metrics::space2, metrics::space2, metrics::space2);
@@ -111,6 +126,9 @@ ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
 
     connect(grayscaleSwitch_, &ToggleSwitch::toggled, this, &ProcessingPanel::grayscaleToggled);
     connect(grayscaleSwitch_, &ToggleSwitch::toggled, magControls_, &MagnificationControls::setGrayscale);
+    connect(flowOverlayCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        emit opticalFlowOverlayChanged(static_cast<DisplayWidget::OpticalFlowOverlayMode>(flowOverlayCombo_->itemData(index).toInt()));
+    });
     connect(resolutionSeg_, &SegmentedControl::currentIndexChanged, this, [this](int index) {
         static constexpr int kDivisors[] = {1, 2, 4, 8};
         emit downscaleChanged(kDivisors[std::clamp(index, 0, 3)]);
@@ -160,6 +178,10 @@ void ProcessingPanel::setCaptureFps(double fps) {
 
 double ProcessingPanel::captureFps() const {
     return magControls_->captureFps();
+}
+
+void ProcessingPanel::setFrequencyBand(double fLow, double fHigh) {
+    if (magControls_) magControls_->setFrequencyBand(fLow, fHigh);
 }
 
 } // namespace livim

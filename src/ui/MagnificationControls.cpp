@@ -402,4 +402,18 @@ void MagnificationControls::setGrayscale(bool on) {
     updating_ = wasUpdating;
 }
 
+void MagnificationControls::setFrequencyBand(double fLow, double fHigh) {
+    if (fLow > fHigh) std::swap(fLow, fHigh);
+    const double fps = captureFpsSpin_ ? captureFpsSpin_->value() : 30.0;
+    const double nyquist = (fps > 0.0 ? fps : 30.0) / 2.0;
+    fLow = std::clamp(fLow, 0.05, std::max(0.1, nyquist));
+    fHigh = std::clamp(fHigh, fLow + 0.01, std::max(0.1, nyquist));
+
+    updating_ = true;
+    freqSlider_->setValues(fLow, fHigh);
+    updating_ = false;
+    refreshFreqReadouts();
+    emit magnificationChanged(collectParams());
+}
+
 } // namespace livim

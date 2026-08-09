@@ -35,6 +35,7 @@ public:
 
 signals:
     void seekRequested(std::int64_t frameIndex);
+    void bandpassTuned(double fLow, double fHigh);
 
 private slots:
     void onWindowTypeChanged(int index);
