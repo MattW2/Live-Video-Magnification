@@ -46,6 +46,9 @@ public:
     // Direct passband frequency tuning from spectrum analysis
     void setFrequencyBand(double fLow, double fHigh);
 
+    // Cache status display update
+    void setCacheStatus(const QString& statusText);
+
 signals:
     void grayscaleToggled(bool enabled);
     void magnificationChanged(MagnificationParams params);
@@ -53,6 +56,9 @@ signals:
     void roiSelectModeChanged(bool selecting);
     void roiResetRequested();
     void opticalFlowOverlayChanged(DisplayWidget::OpticalFlowOverlayMode mode);
+    void precomputeCacheRequested();
+    void clearCacheRequested();
+    void speedMultiplierChanged(double multiplier);
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -71,6 +77,12 @@ private:
 
     QGroupBox*        odsGroup_ = nullptr;
     RoiManagerWidget* roiManager_ = nullptr;
+
+    QGroupBox*   cacheGroup_ = nullptr;
+    QPushButton* btnPrecomputeCache_ = nullptr;
+    QPushButton* btnClearCache_ = nullptr;
+    QComboBox*   speedCombo_ = nullptr;
+    QLabel*      lblCacheStatus_ = nullptr;
 };
 
 } // namespace livim

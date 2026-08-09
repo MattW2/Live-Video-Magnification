@@ -88,6 +88,10 @@ qt_add_executable(livim WIN32 MACOSX_BUNDLE
     src/export/FileExportFrameSource.cpp
     src/export/BufferExportFrameSource.hpp
     src/export/BufferExportFrameSource.cpp
+    src/export/ScratchFileCache.hpp
+    src/export/ScratchFileCache.cpp
+    src/pipeline/ProcessedRamCache.hpp
+    src/pipeline/ProcessedRamCache.cpp
     src/export/RecordingBuffer.hpp
     src/export/RecordingBuffer.cpp
     src/export/Exporter.hpp

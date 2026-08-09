@@ -120,6 +120,44 @@ ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
     odsLayout->addWidget(roiManager_);
     layout->addWidget(odsGroup_);
 
+    // Pre-Computed Cache & Fast Playback Group
+    cacheGroup_ = new QGroupBox("Fast Playback Cache", this);
+    auto* cacheLayout = new QVBoxLayout(cacheGroup_);
+    cacheLayout->setContentsMargins(metrics::space2, metrics::space2, metrics::space2, metrics::space2);
+    cacheLayout->setSpacing(metrics::space2);
+
+    lblCacheStatus_ = new QLabel("Cache: Inactive (Live Mode)", cacheGroup_);
+    lblCacheStatus_->setWordWrap(true);
+    cacheLayout->addWidget(lblCacheStatus_);
+
+    auto* btnRow = new QWidget(cacheGroup_);
+    auto* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnPrecomputeCache_ = new QPushButton("Pre-Compute Cache", btnRow);
+    btnPrecomputeCache_->setToolTip("Pre-compute every frame of processed video into RAM or Scratch File for unthrottled high-speed playback.");
+    btnClearCache_ = new QPushButton("Clear Cache", btnRow);
+    btnClearCache_->setEnabled(false);
+    btnLayout->addWidget(btnPrecomputeCache_);
+    btnLayout->addWidget(btnClearCache_);
+    cacheLayout->addWidget(btnRow);
+
+    auto* speedRow = new QWidget(cacheGroup_);
+    auto* speedLayout = new QHBoxLayout(speedRow);
+    speedLayout->setContentsMargins(0, 0, 0, 0);
+    speedLayout->addWidget(new QLabel("Speed Multiplier", speedRow));
+    speedLayout->addStretch(1);
+    speedCombo_ = new QComboBox(speedRow);
+    speedCombo_->addItem("1.0x (Normal)", 1.0);
+    speedCombo_->addItem("1.5x Fast", 1.5);
+    speedCombo_->addItem("2.0x Double", 2.0);
+    speedCombo_->addItem("4.0x Quad", 4.0);
+    speedCombo_->addItem("8.0x High Speed", 8.0);
+    speedCombo_->addItem("Max Speed (120+ FPS)", 16.0);
+    speedLayout->addWidget(speedCombo_);
+    cacheLayout->addWidget(speedRow);
+
+    layout->addWidget(cacheGroup_);
+
     layout->addStretch(1);
 
     refreshIcons();
@@ -138,6 +176,22 @@ ProcessingPanel::ProcessingPanel(QWidget* parent) : QWidget(parent) {
 
     connect(magControls_, &MagnificationControls::magnificationChanged, this,
             &ProcessingPanel::magnificationChanged);
+
+    connect(btnPrecomputeCache_, &QPushButton::clicked, this, &ProcessingPanel::precomputeCacheRequested);
+    connect(btnClearCache_, &QPushButton::clicked, this, &ProcessingPanel::clearCacheRequested);
+    connect(speedCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        emit speedMultiplierChanged(speedCombo_->itemData(index).toDouble());
+    });
+}
+
+void ProcessingPanel::setCacheStatus(const QString& statusText) {
+    if (lblCacheStatus_) {
+        lblCacheStatus_->setText(statusText);
+    }
+    if (btnClearCache_) {
+        btnClearCache_->setEnabled(!statusText.contains("Inactive"));
+    }
+}
 }
 
 void ProcessingPanel::refreshIcons() {

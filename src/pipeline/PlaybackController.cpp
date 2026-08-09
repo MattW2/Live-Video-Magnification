@@ -1,15 +1,22 @@
 #include "pipeline/PlaybackController.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
+#include "export/FileExportFrameSource.hpp"
 #include "export/RecordingBuffer.hpp"
 #include "processing/ChainBuilder.hpp"
 #include "processing/ProcessingChain.hpp"
 #include "processing/magnification/SpatialFilter.hpp"
 #include "source/CameraSource.hpp"
 #include "source/FileSource.hpp"
+#include "core/Clock.hpp"
 #include "core/IVideoRenderer.hpp"
 
 namespace livim {
@@ -32,6 +39,7 @@ void PlaybackController::bindRenderer(IVideoRenderer* renderer) {
 
 bool PlaybackController::openFile(const std::string& path) {
     std::lock_guard<std::mutex> lg(mu_);
+    currentFilePath_ = path;
     playbackFps_ = 0.0; // follow the source's reported FPS until overridden
     cameraSource_ = false;
     factory_ = [this, path] {
@@ -334,6 +342,146 @@ StatsSnapshot PlaybackController::stats() {
     instr_.setSourceDrops(queue_.drops());
     instr_.setQueueDepth(queue_.size());
     return instr_.snapshot();
+}
+
+double PlaybackController::getSystemRamLoadPercent() const {
+#if defined(_WIN32)
+    MEMORYSTATUSEX statex;
+    statex.dwLength = sizeof(statex);
+    if (GlobalMemoryStatusEx(&statex)) {
+        return static_cast<double>(statex.dwMemoryLoad);
+    }
+#endif
+    return 0.0;
+}
+
+bool PlaybackController::hasRamCache() const {
+    return ramCache_.isComplete();
+}
+
+bool PlaybackController::hasScratchCache() const {
+    return scratchCache_.isComplete();
+}
+
+void PlaybackController::clearCache() {
+    ramCache_.clear();
+    scratchCache_.cleanup();
+}
+
+std::size_t PlaybackController::ramCacheMemoryBytes() const {
+    return ramCache_.memoryUsageBytes();
+}
+
+void PlaybackController::setSpeedMultiplier(double multiplier) {
+    speedMultiplier_ = std::max(0.1, multiplier);
+    if (source_) {
+        const double baseFps = playbackFps_ > 0.0 ? playbackFps_ : reportedFps_;
+        source_->setPlaybackFps(baseFps * speedMultiplier_);
+    }
+}
+
+bool PlaybackController::precomputeCache(std::int64_t inFrame, std::int64_t outFrame,
+                                          std::function<bool(int done, int total, bool isScratchFile)> progressCb) {
+    if (currentFilePath_.empty() || cameraSource_) return false;
+
+    clearCache();
+    const bool wasPlaying = isPlaying();
+    pause();
+
+    FileExportFrameSource src(currentFilePath_, inFrame, outFrame);
+    if (!src.open()) {
+        if (wasPlaying) play();
+        return false;
+    }
+
+    const double fps = reportedFps_ > 0.0 ? reportedFps_ : 30.0;
+    const std::int64_t totalFrames = src.frameCount();
+    if (totalFrames <= 0) {
+        src.close();
+        if (wasPlaying) play();
+        return false;
+    }
+
+    const ProcessorConfig cfg = composeConfig();
+    std::vector<std::unique_ptr<IProcessor>> chain = buildProcessors();
+
+    double ramLoad = getSystemRamLoadPercent();
+    bool isScratch = (ramLoad >= 80.0);
+
+    if (isScratch) {
+        std::filesystem::path scratchPath = std::filesystem::temp_directory_path() / "livim_scratch_cache.avi";
+        cv::Mat sampleRaw;
+        if (src.next(sampleRaw) && !sampleRaw.empty()) {
+            src.close();
+            src.open();
+            scratchCache_.open(scratchPath.string(), fps, sampleRaw.size());
+        }
+    } else {
+        ramCache_.setRangeAndFps(inFrame, inFrame + totalFrames, fps);
+        ramCache_.setConfig(cfg);
+    }
+
+    std::uint64_t seq = 0;
+    const double frameIntervalUs = 1'000'000.0 / (fps > 0.0 ? fps : 30.0);
+    cv::Mat raw;
+    int doneCount = 0;
+
+    while (src.next(raw)) {
+        if (raw.empty()) continue;
+
+        auto in = std::make_shared<Frame>();
+        in->seq = seq++;
+        in->captureTs = now();
+        in->ptsUs = static_cast<std::int64_t>(static_cast<double>(in->seq) * frameIntervalUs);
+        in->width = raw.cols;
+        in->height = raw.rows;
+        in->format = raw.channels() == 1 ? PixelFormat::Gray8 : PixelFormat::BGR8;
+        in->image = raw;
+
+        FrameRef original;
+        const FrameRef proc = runChainOnce(chain, in, cfg, original);
+
+        if (!isScratch) {
+            if (getSystemRamLoadPercent() >= 80.0) {
+                isScratch = true;
+                std::filesystem::path scratchPath = std::filesystem::temp_directory_path() / "livim_scratch_cache.avi";
+                scratchCache_.open(scratchPath.string(), fps, proc->image.size());
+                for (std::size_t i = 0; i < ramCache_.frameCount(); ++i) {
+                    cv::Mat pMat, oMat;
+                    if (ramCache_.getFrame(inFrame + static_cast<std::int64_t>(i), pMat, oMat)) {
+                        scratchCache_.writeFrame(pMat);
+                    }
+                }
+                ramCache_.clear();
+            }
+        }
+
+        if (isScratch) {
+            scratchCache_.writeFrame(proc->image);
+        } else {
+            ramCache_.addFrame(proc->image, original->image);
+        }
+
+        doneCount++;
+        if (progressCb && !progressCb(doneCount, static_cast<int>(totalFrames), isScratch)) {
+            src.close();
+            clearCache();
+            if (wasPlaying) play();
+            return false;
+        }
+    }
+
+    src.close();
+
+    if (isScratch) {
+        scratchCache_.finalize();
+        openFile(scratchCache_.path());
+    } else {
+        ramCache_.setComplete(true);
+    }
+
+    if (wasPlaying) play();
+    return true;
 }
 
 } // namespace livim

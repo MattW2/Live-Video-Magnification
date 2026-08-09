@@ -10,6 +10,8 @@
 #include "core/Instrumentation.hpp"
 #include "core/LatestFrameMailbox.hpp"
 #include "core/PipelineTypes.hpp"
+#include "export/ScratchFileCache.hpp"
+#include "pipeline/ProcessedRamCache.hpp"
 #include "processing/IProcessor.hpp"
 
 namespace livim {
@@ -108,6 +110,18 @@ public:
     LatestFrameMailbox* mailbox() { return &mailbox_; }
     Instrumentation* instrumentation() { return &instr_; }
 
+    // --- Pre-Computed Caching & High-Speed Playback ---
+    bool precomputeCache(std::int64_t inFrame, std::int64_t outFrame,
+                         std::function<bool(int done, int total, bool isScratchFile)> progressCb);
+    bool hasRamCache() const;
+    bool hasScratchCache() const;
+    void clearCache();
+    std::size_t ramCacheMemoryBytes() const;
+    double getSystemRamLoadPercent() const;
+
+    void setSpeedMultiplier(double multiplier);
+    double speedMultiplier() const { return speedMultiplier_; }
+
 private:
     enum class State { Idle, Playing, Paused, Stopped };
 
@@ -155,6 +169,11 @@ private:
 
     std::shared_ptr<RecordingBuffer> recordBuf_; // non-null only while camera recording
     std::mutex mu_;
+
+    std::string currentFilePath_;
+    ProcessedRamCache ramCache_;
+    ScratchFileCache scratchCache_;
+    double speedMultiplier_ = 1.0;
 };
 
 } // namespace livim

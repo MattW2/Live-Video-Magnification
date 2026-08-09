@@ -250,6 +250,51 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     connect(processingPanel_, &ProcessingPanel::roiResetRequested, this, [this] { resetRoi(); });
 
+    connect(processingPanel_, &ProcessingPanel::precomputeCacheRequested, this, [this] {
+        QProgressDialog dialog("Pre-computing Processed Cache...", "Cancel", 0, 100, this);
+        dialog.setWindowModality(Qt::WindowModal);
+        dialog.setMinimumDuration(0);
+        dialog.setValue(0);
+        dialog.show();
+
+        const bool ok = controller_.precomputeCache(0, controller_.frameCount(), [&](int done, int total, bool isScratch) {
+            dialog.setMaximum(total);
+            dialog.setValue(done);
+            const double ramPct = controller_.getSystemRamLoadPercent();
+            if (isScratch) {
+                dialog.setLabelText(QString("Pre-computing Scratch Video File (RAM Load: %1%)...\nFrame %2 / %3")
+                                   .arg(ramPct, 0, 'f', 1).arg(done).arg(total));
+            } else {
+                dialog.setLabelText(QString("Pre-computing RAM Cache (RAM Load: %1%)...\nFrame %2 / %3")
+                                   .arg(ramPct, 0, 'f', 1).arg(done).arg(total));
+            }
+            QCoreApplication::processEvents();
+            return !dialog.wasCanceled();
+        });
+
+        if (ok) {
+            if (controller_.hasRamCache()) {
+                const double mb = static_cast<double>(controller_.ramCacheMemoryBytes()) / (1024.0 * 1024.0);
+                processingPanel_->setCacheStatus(QString("RAM Cache: Active (%1 frames, %2 MB RAM)")
+                                                 .arg(controller_.frameCount()).arg(mb, 0, 'f', 1));
+            } else if (controller_.hasScratchCache()) {
+                processingPanel_->setCacheStatus(QString("Scratch File: Active (%1 frames, 80% RAM Limit)")
+                                                 .arg(controller_.frameCount()));
+            }
+        } else {
+            processingPanel_->setCacheStatus("Cache: Inactive (Live Mode)");
+        }
+    });
+
+    connect(processingPanel_, &ProcessingPanel::clearCacheRequested, this, [this] {
+        controller_.clearCache();
+        processingPanel_->setCacheStatus("Cache: Inactive (Live Mode)");
+    });
+
+    connect(processingPanel_, &ProcessingPanel::speedMultiplierChanged, this, [this](double mult) {
+        controller_.setSpeedMultiplier(mult);
+    });
+
     // ROI selection is sticky: it stays armed until Reset ROI, and each drawn rect is composed
     // onto the active ROI by setRoi().
     connect(display_, &DisplayWidget::roiSelected, this,
