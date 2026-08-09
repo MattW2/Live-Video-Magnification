@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <system_error>
+#include <opencv2/imgproc.hpp>
 
 namespace livim {
 

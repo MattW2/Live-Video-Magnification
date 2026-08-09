@@ -192,7 +192,6 @@ void ProcessingPanel::setCacheStatus(const QString& statusText) {
         btnClearCache_->setEnabled(!statusText.contains("Inactive"));
     }
 }
-}
 
 void ProcessingPanel::refreshIcons() {
     const QColor c = palette().color(QPalette::ButtonText);
